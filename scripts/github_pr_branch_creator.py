@@ -236,7 +236,7 @@ class GitHubPRBranchCreator:
 
         # Add metadata about the original PR
         original_pr_url = pr_info.get('html_url', '')
-        metadata = f"\n\n---\n**Original PR:** {original_pr_url}"
+        metadata = f"\n\n---\n**Original PR:** `{original_pr_url}`"
 
         data = {
             "title": title,
@@ -263,6 +263,7 @@ class GitHubPRBranchCreator:
                     return True
                 else:
                     print(f"✗ Failed to create pull request. Error message: {error_data.get('message', 'Unknown error')}")
+                    print(f"Response: {response.text}")
                     return False
             else:
                 print(f"✗ Failed to create pull request: {response.status_code}")
@@ -271,6 +272,204 @@ class GitHubPRBranchCreator:
 
         except requests.RequestException as e:
             print(f"✗ Error creating pull request: {e}")
+            return False
+
+    def _create_branch_from_base(self, owner: str, repo: str, target_repo: str, 
+                                branch_name: str, commit_sha: str, base_branch: str) -> bool:
+        """
+        Create a branch based on an existing branch with content from a specific commit.
+        This creates a proper Git history relationship for pull requests.
+
+        Args:
+            owner: Original repository owner
+            repo: Original repository name
+            target_repo: Target repository name (owner-repo format)
+            branch_name: Name of the new branch
+            commit_sha: SHA of the commit to copy content from
+            base_branch: Name of the base branch to branch from
+
+        Returns:
+            True if successful, False otherwise
+        """
+        import subprocess
+        import tempfile
+
+        print(f"\n🌱 Creating branch '{branch_name}' from base '{base_branch}'...")
+        print("=" * 50)
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                original_url = f"https://github.com/{owner}/{repo}.git"
+                target_url = f"https://github.com/{self.target_org}/{target_repo}.git"
+                auth_target_url = target_url.replace('https://', f'https://{self.github_token}@')
+
+                # Clone the target repository
+                print(f"📥 Cloning target repository...")
+                clone_result = subprocess.run([
+                    'git', 'clone', auth_target_url, 'target'
+                ], cwd=temp_dir, capture_output=True, text=True)
+
+                if clone_result.returncode != 0:
+                    print(f"✗ Failed to clone target repository: {clone_result.stderr}")
+                    return False
+                print("✓ Successfully cloned target repository")
+
+                target_dir = os.path.join(temp_dir, 'target')
+
+                # Configure git user
+                print("👤 Configuring Git user...")
+                subprocess.run(['git', 'config', 'user.name', 'PR Branch Creator'], 
+                             cwd=target_dir, capture_output=True)
+                subprocess.run(['git', 'config', 'user.email', 'pr-branch-creator@example.com'], 
+                             cwd=target_dir, capture_output=True)
+                print("✓ Git user configured")
+
+                # Checkout the base branch
+                print(f"🔄 Checking out base branch '{base_branch}'...")
+                checkout_result = subprocess.run([
+                    'git', 'checkout', base_branch
+                ], cwd=target_dir, capture_output=True, text=True)
+
+                if checkout_result.returncode != 0:
+                    print(f"✗ Failed to checkout base branch: {checkout_result.stderr}")
+                    return False
+                print(f"✓ Checked out base branch '{base_branch}'")
+
+                # Create new branch from base
+                print(f"🌿 Creating new branch '{branch_name}'...")
+                branch_result = subprocess.run([
+                    'git', 'checkout', '-b', branch_name
+                ], cwd=target_dir, capture_output=True, text=True)
+
+                if branch_result.returncode != 0:
+                    print(f"✗ Failed to create branch: {branch_result.stderr}")
+                    return False
+                print(f"✓ Created branch '{branch_name}'")
+
+                # Clone original repository to get commit content
+                print(f"📥 Cloning original repository for commit content...")
+                original_clone_result = subprocess.run([
+                    'git', 'clone', original_url, 'original'
+                ], cwd=temp_dir, capture_output=True, text=True)
+
+                if original_clone_result.returncode != 0:
+                    print(f"✗ Failed to clone original repository: {original_clone_result.stderr}")
+                    return False
+                print("✓ Successfully cloned original repository")
+
+                original_dir = os.path.join(temp_dir, 'original')
+
+                # Get the commit content from the original repository
+                print(f"📦 Extracting commit content from {commit_sha[:8]}...")
+                archive_result = subprocess.run([
+                    'git', 'archive', '--format=tar', commit_sha
+                ], cwd=original_dir, capture_output=True)
+
+                if archive_result.returncode != 0:
+                    print(f"✗ Failed to archive commit: {archive_result.stderr}")
+                    return False
+                print("✓ Successfully archived commit content")
+
+                # Clear current directory content (except .git)
+                print("🧹 Clearing current branch content...")
+                for item in os.listdir(target_dir):
+                    if item != '.git':
+                        item_path = os.path.join(target_dir, item)
+                        if os.path.isdir(item_path):
+                            import shutil
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                print("✓ Cleared current content")
+
+                # Extract the archive to the target directory
+                print("📂 Extracting new content...")
+                extract_result = subprocess.run([
+                    'tar', '-xf', '-'
+                ], cwd=target_dir, input=archive_result.stdout, capture_output=True)
+
+                if extract_result.returncode != 0:
+                    print(f"✗ Failed to extract archive: {extract_result.stderr}")
+                    return False
+                print("✓ Successfully extracted new content")
+
+                # Remove .github/workflows folder if it exists
+                print("🧹 Checking for .github/workflows folder...")
+                workflows_path = os.path.join(target_dir, '.github', 'workflows')
+                if os.path.exists(workflows_path):
+                    import shutil
+                    shutil.rmtree(workflows_path)
+                    print("✓ Removed .github/workflows folder")
+                    
+                    # Remove .github folder if it's now empty
+                    github_path = os.path.join(target_dir, '.github')
+                    if os.path.exists(github_path) and not os.listdir(github_path):
+                        os.rmdir(github_path)
+                        print("✓ Removed empty .github folder")
+                else:
+                    print("ℹ No .github/workflows folder found")
+
+                # Add all changes
+                print("➕ Adding changes to Git staging area...")
+                add_result = subprocess.run([
+                    'git', 'add', '-A'
+                ], cwd=target_dir, capture_output=True, text=True)
+
+                if add_result.returncode != 0:
+                    print(f"✗ Failed to add changes: {add_result.stderr}")
+                    return False
+                print("✓ Changes added to staging area")
+
+                # Get original commit message
+                print("📝 Retrieving original commit message...")
+                commit_msg_result = subprocess.run([
+                    'git', 'log', '--format=%B', '-n', '1', commit_sha
+                ], cwd=original_dir, capture_output=True, text=True)
+
+                commit_message = commit_msg_result.stdout.strip() if commit_msg_result.returncode == 0 else f"Commit {commit_sha[:8]}"
+                print(f"✓ Retrieved commit message: {commit_message[:50]}{'...' if len(commit_message) > 50 else ''}")
+
+                # Create the commit
+                print("💾 Creating commit with PR changes...")
+                commit_result = subprocess.run([
+                    'git', 'commit', '-m', f"[PR Changes] {commit_message}"
+                ], cwd=target_dir, capture_output=True, text=True)
+
+                if commit_result.returncode != 0:
+                    # Check if there are no changes to commit
+                    if "nothing to commit" in commit_result.stdout:
+                        print("ℹ No changes to commit - content is identical")
+                        # Push the branch anyway to ensure it exists
+                        print(f"🚀 Pushing branch '{branch_name}' to remote repository...")
+                        push_result = subprocess.run([
+                            'git', 'push', 'origin', branch_name
+                        ], cwd=target_dir, capture_output=True, text=True)
+                        
+                        if push_result.returncode != 0:
+                            print(f"✗ Failed to push branch: {push_result.stderr}")
+                            return False
+                        print(f"✅ Successfully created branch '{branch_name}' (no content changes)")
+                        return True
+                    else:
+                        print(f"✗ Failed to create commit: {commit_result.stderr}")
+                        return False
+                print("✓ Created commit successfully")
+
+                # Push the branch
+                print(f"🚀 Pushing branch '{branch_name}' to remote repository...")
+                push_result = subprocess.run([
+                    'git', 'push', 'origin', branch_name
+                ], cwd=target_dir, capture_output=True, text=True)
+
+                if push_result.returncode != 0:
+                    print(f"✗ Failed to push branch: {push_result.stderr}")
+                    return False
+
+                print(f"✅ Successfully created branch '{branch_name}' from base '{base_branch}'")
+                return True
+
+        except Exception as e:
+            print(f"✗ Error creating branch '{branch_name}': {e}")
             return False
 
     def _create_orphan_branch_with_commit(self, owner: str, repo: str, target_repo: str, 
@@ -524,7 +723,7 @@ class GitHubPRBranchCreator:
                 print(f"ℹ Branch '{pr_branch_name}' already exists, skipping creation")
             else:
                 print(f"📝 Branch '{pr_branch_name}' does not exist, creating...")
-                if not self._create_orphan_branch_with_commit(owner, repo, target_repo_name, pr_branch_name, pr_sha):
+                if not self._create_branch_from_base(owner, repo, target_repo_name, pr_branch_name, pr_sha, main_branch_name):
                     success = False
                     print(f"❌ Failed to create branch '{pr_branch_name}'")
                 else:
