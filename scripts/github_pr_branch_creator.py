@@ -27,15 +27,20 @@ class GitHubPRBranchCreator:
             'Accept': 'application/vnd.github.v3+json'
         }
 
-    def _parse_pr_url(self, url: str) -> Tuple[str, str, int]:
-        pattern = r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)'
+    def _parse_pr_url(self, url: str) -> Tuple[str, str, int, Optional[str]]:
+        """
+        Parse GitHub PR URL to extract owner, repo, PR number, and optional commit SHA.
+        Returns:
+            Tuple of (owner, repo, pr_number, commit_sha)
+        """
+        # Pattern for PR URL with optional commit
+        pattern = r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/commits/([a-f0-9]+))?'
         match = re.match(pattern, url.strip())
 
         if not match:
             raise ValueError(f"Invalid GitHub PR URL format: {url}")
-
-        owner, repo, pr_number = match.groups()
-        return owner, repo, int(pr_number)
+        owner, repo, pr_number, commit_sha = match.groups()
+        return owner, repo, int(pr_number), commit_sha
 
     def check_repo_exists(self, owner: str, repo: str) -> bool:
         target_repo_name = f"{owner}-{repo}"
@@ -53,6 +58,33 @@ class GitHubPRBranchCreator:
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
         return response.json()
+
+    def _get_commit_repo_info(self, pr_info: Dict[str, Any], target_commit_sha: Optional[str] = None) -> Tuple[str, str, str]:
+        """
+        Determine which repository contains the target commit (original or fork).
+
+        Args:
+            pr_info: PR information from GitHub API
+            target_commit_sha: Specific commit SHA to look for, if None uses PR head
+
+        Returns:
+            Tuple of (owner, repo, commit_sha) for the repository containing the commit
+        """
+        # Use the provided commit SHA or fall back to PR head
+        commit_sha = target_commit_sha or pr_info['head']['sha']
+
+        # Check if this is a fork-based PR
+        head_repo = pr_info['head']['repo']
+        base_repo = pr_info['base']['repo']
+
+        if head_repo['full_name'] != base_repo['full_name']:
+            # This is a fork-based PR, use the head repository
+            print(f"📍 PR is from fork: {head_repo['full_name']} → {base_repo['full_name']}")
+            return head_repo['owner']['login'], head_repo['name'], commit_sha
+        else:
+            # This is a same-repo PR, use the base repository
+            print(f"📍 PR is within same repository: {base_repo['full_name']}")
+            return base_repo['owner']['login'], base_repo['name'], commit_sha
 
     def _get_merge_parent_sha(self, owner: str, repo: str, merge_commit_sha: str) -> str:
         """
@@ -251,7 +283,7 @@ class GitHubPRBranchCreator:
                 print(f"✓ Created branch '{branch_name}'")
 
                 # Clone original repository to get commit content
-                print("📥 Cloning original repository for commit content...")
+                print(f"📥 Cloning original repository for commit content from '{original_url}'")
                 original_clone_result = subprocess.run([
                     'git', 'clone', original_url, 'original'
                 ], cwd=temp_dir, capture_output=True, text=True)
@@ -264,7 +296,7 @@ class GitHubPRBranchCreator:
                 original_dir = os.path.join(temp_dir, 'original')
 
                 # Get the commit content from the original repository
-                print(f"📦 Extracting commit content from {commit_sha[:8]}...")
+                print(f"📦 Extracting commit content from '{commit_sha}'")
                 archive_result = subprocess.run([
                     'git', 'archive', '--format=tar', commit_sha
                 ], cwd=original_dir, capture_output=True)
@@ -297,21 +329,14 @@ class GitHubPRBranchCreator:
                     return False
                 print("✓ Successfully extracted new content")
 
-                # Remove .github/workflows folder if it exists
-                print("🧹 Checking for .github/workflows folder...")
-                workflows_path = os.path.join(target_dir, '.github', 'workflows')
-                if os.path.exists(workflows_path):
+                # Remove .github folder if it exists
+                print("🧹 Checking for .github folder...")
+                if os.path.exists(os.path.join(target_dir, '.github')):
                     import shutil
-                    shutil.rmtree(workflows_path)
-                    print("✓ Removed .github/workflows folder")
-
-                    # Remove .github folder if it's now empty
-                    github_path = os.path.join(target_dir, '.github')
-                    if os.path.exists(github_path) and not os.listdir(github_path):
-                        os.rmdir(github_path)
-                        print("✓ Removed empty .github folder")
+                    shutil.rmtree(os.path.join(target_dir, '.github'))
+                    print("✓ Removed .github folder")
                 else:
-                    print("ℹ No .github/workflows folder found")
+                    print("ℹ No .github folder found")
 
                 # Add all changes
                 print("➕ Adding changes to Git staging area...")
@@ -444,21 +469,15 @@ class GitHubPRBranchCreator:
                     return False
                 print("✓ Successfully extracted files")
 
-                # Remove .github/workflows folder if it exists
-                print("🧹 Checking for .github/workflows folder...")
-                workflows_path = os.path.join(work_dir, '.github', 'workflows')
-                if os.path.exists(workflows_path):
+                # Remove .github folder if it exists
+                print("🧹 Checking for .github folder...")
+                github_path = os.path.join(work_dir, '.github')
+                if os.path.exists(github_path):
                     import shutil
-                    shutil.rmtree(workflows_path)
-                    print("✓ Removed .github/workflows folder")
-
-                    # Remove .github folder if it's now empty
-                    github_path = os.path.join(work_dir, '.github')
-                    if os.path.exists(github_path) and not os.listdir(github_path):
-                        os.rmdir(github_path)
-                        print("✓ Removed empty .github folder")
+                    shutil.rmtree(github_path)
+                    print("✓ Removed .github folder")
                 else:
-                    print("ℹ No .github/workflows folder found")
+                    print("ℹ No .github folder found")
 
                 # Add all files and create orphan commit
                 print("➕ Adding files to Git staging area...")
@@ -525,8 +544,11 @@ class GitHubPRBranchCreator:
         try:
             print("🔍 Step 1: Parsing PR URL...")
             # Parse the PR URL
-            owner, repo, pr_number = self._parse_pr_url(pr_url)
-            print(f"✓ Parsed URL: {owner}/{repo}/pull/{pr_number}")
+            owner, repo, pr_number, target_commit_sha = self._parse_pr_url(pr_url)
+            if target_commit_sha:
+                print(f"✓ Parsed URL: {owner}/{repo}/pull/{pr_number} at commit {target_commit_sha[:8]}")
+            else:
+                print(f"✓ Parsed URL: {owner}/{repo}/pull/{pr_number}")
 
             print("\n🏢 Step 2: Checking target repository...")
             # Check if target repository exists, create if it doesn't
@@ -556,10 +578,15 @@ class GitHubPRBranchCreator:
             print(f"✓ Base Branch: {base_branch}")
 
             print("\n🔗 Step 4: Determining commit SHAs...")
-            # Get the SHA for the PR branch (final state BEFORE merge)
-            # Always use the head SHA - this is the final state of the PR before merging
-            pr_sha = pr_info['head']['sha']
-            print(f"✓ PR head SHA: {pr_sha}")
+
+            # Determine the correct repository and commit for PR content
+            commit_owner, commit_repo, pr_sha = self._get_commit_repo_info(pr_info, target_commit_sha)
+            if target_commit_sha:
+                print(f"✓ Using specific commit SHA: {pr_sha}")
+                print(f"✓ Commit repository: {commit_owner}/{commit_repo}")
+            else:
+                print(f"✓ Using PR head SHA: {pr_sha}")
+                print(f"✓ Head repository: {commit_owner}/{commit_repo}")
 
             # Get the SHA for the base branch of the PR
             print("📍 Getting base branch SHA at the time of the PR...")
@@ -568,8 +595,11 @@ class GitHubPRBranchCreator:
             print(f"✓ Base branch SHA at PR time: {main_sha}")
 
             # Create branches
-            pr_branch_name = f"pr-{pr_number}"
             main_branch_name = f"{pr_info['base']['ref']}-{pr_number}"
+            pr_branch_name = f"pr-{pr_number}"
+            if target_commit_sha:
+                # Include commit SHA in branch name for specific commits
+                pr_branch_name += f"-{target_commit_sha[:8]}"
 
             print("\n🌿 Step 5: Checking and creating orphan branches...")
             print(f"Will check/create branches: '{main_branch_name}' and '{pr_branch_name}'")
@@ -594,6 +624,7 @@ class GitHubPRBranchCreator:
                 print(f"ℹ Branch '{pr_branch_name}' already exists, skipping creation")
             else:
                 print(f"📝 Branch '{pr_branch_name}' does not exist, creating...")
+                # Use the commit repository info for PR branch creation
                 if not self._create_branch_from_base(owner, repo, target_repo_name, pr_branch_name, pr_sha, main_branch_name):
                     success = False
                     print(f"❌ Failed to create branch '{pr_branch_name}'")
@@ -635,7 +666,7 @@ def main():
         print()
 
     # Get PR URL from user
-    pr_url = input("Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/1234): ").strip()
+    pr_url = input("Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/1234 or https://github.com/owner/repo/pull/1234/commits/sha): ").strip()
 
     if not pr_url:
         print("✗ No URL provided. Exiting.")
