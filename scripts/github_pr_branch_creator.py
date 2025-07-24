@@ -28,18 +28,6 @@ class GitHubPRBranchCreator:
         }
 
     def _parse_pr_url(self, url: str) -> Tuple[str, str, int]:
-        """
-        Parse GitHub PR URL to extract owner, repo, and PR number.
-
-        Args:
-            url: GitHub PR URL like https://github.com/owner/repo/pull/1234
-
-        Returns:
-            Tuple of (owner, repo, pr_number)
-
-        Raises:
-            ValueError: If URL format is invalid
-        """
         pattern = r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)'
         match = re.match(pattern, url.strip())
 
@@ -50,16 +38,6 @@ class GitHubPRBranchCreator:
         return owner, repo, int(pr_number)
 
     def check_repo_exists(self, owner: str, repo: str) -> bool:
-        """
-        Check if the target repository exists in the JulianEgbertMasterThesis org.
-
-        Args:
-            owner: Original repository owner
-            repo: Original repository name
-
-        Returns:
-            True if repository exists, False otherwise
-        """
         target_repo_name = f"{owner}-{repo}"
         url = f"https://api.github.com/repos/{self.target_org}/{target_repo_name}"
 
@@ -71,42 +49,13 @@ class GitHubPRBranchCreator:
             return False
 
     def _get_pr_info(self, owner: str, repo: str, pr_number: int) -> Dict[str, Any]:
-        """
-        Get pull request information from GitHub API.
-
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            pr_number: Pull request number
-
-        Returns:
-            Dictionary containing PR information
-
-        Raises:
-            requests.RequestException: If API request fails
-        """
         url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
         return response.json()
 
     def _get_main_branch_sha(self, owner: str, repo: str, branch_name: str = 'main') -> str:
-        """
-        Get the SHA of the main branch.
-
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            branch_name: Name of the main branch (default: 'main')
-
-        Returns:
-            SHA of the branch head
-
-        Raises:
-            requests.RequestException: If API request fails
-        """
         url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch_name}"
-
         response = requests.get(url, headers=self.headers)
         if response.status_code == 404:
             # Try 'master' if 'main' doesn't exist
@@ -119,17 +68,6 @@ class GitHubPRBranchCreator:
     def _get_merge_parent_sha(self, owner: str, repo: str, merge_commit_sha: str) -> str:
         """
         Get the parent SHA of a merge commit (the state of main before the merge).
-
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            merge_commit_sha: SHA of the merge commit
-
-        Returns:
-            SHA of the first parent (main branch state before merge)
-
-        Raises:
-            requests.RequestException: If API request fails
         """
         url = f"https://api.github.com/repos/{owner}/{repo}/commits/{merge_commit_sha}"
 
@@ -145,17 +83,9 @@ class GitHubPRBranchCreator:
         # First parent is typically the main branch state before merge
         return parents[0]['sha']
 
-    def _create_repository(self, owner: str, repo: str, original_repo_url: str) -> bool:
+    def _create_repository(self, owner: str, repo: str) -> bool:
         """
         Create an empty repository in the target organization.
-
-        Args:
-            owner: Original repository owner
-            repo: Original repository name
-            original_repo_url: URL of the original repository
-
-        Returns:
-            True if successful, False otherwise
         """
         target_repo_name = f"{owner}-{repo}"
         return self._create_empty_repository(target_repo_name, f"Copy of {owner}/{repo}")
@@ -207,7 +137,6 @@ class GitHubPRBranchCreator:
             True if branch exists, False otherwise
         """
         url = f"https://api.github.com/repos/{self.target_org}/{target_repo}/branches/{branch_name}"
-        
         try:
             response = requests.get(url, headers=self.headers)
             return response.status_code == 200
@@ -274,22 +203,10 @@ class GitHubPRBranchCreator:
             print(f"✗ Error creating pull request: {e}")
             return False
 
-    def _create_branch_from_base(self, owner: str, repo: str, target_repo: str, 
-                                branch_name: str, commit_sha: str, base_branch: str) -> bool:
+    def _create_branch_from_base(self, owner: str, repo: str, target_repo: str, branch_name: str, commit_sha: str, base_branch: str) -> bool:
         """
         Create a branch based on an existing branch with content from a specific commit.
         This creates a proper Git history relationship for pull requests.
-
-        Args:
-            owner: Original repository owner
-            repo: Original repository name
-            target_repo: Target repository name (owner-repo format)
-            branch_name: Name of the new branch
-            commit_sha: SHA of the commit to copy content from
-            base_branch: Name of the base branch to branch from
-
-        Returns:
-            True if successful, False otherwise
         """
         import subprocess
         import tempfile
@@ -304,7 +221,7 @@ class GitHubPRBranchCreator:
                 auth_target_url = target_url.replace('https://', f'https://{self.github_token}@')
 
                 # Clone the target repository
-                print(f"📥 Cloning target repository...")
+                print("📥 Cloning target repository...")
                 clone_result = subprocess.run([
                     'git', 'clone', auth_target_url, 'target'
                 ], cwd=temp_dir, capture_output=True, text=True)
@@ -318,10 +235,8 @@ class GitHubPRBranchCreator:
 
                 # Configure git user
                 print("👤 Configuring Git user...")
-                subprocess.run(['git', 'config', 'user.name', 'PR Branch Creator'], 
-                             cwd=target_dir, capture_output=True)
-                subprocess.run(['git', 'config', 'user.email', 'pr-branch-creator@example.com'], 
-                             cwd=target_dir, capture_output=True)
+                subprocess.run(['git', 'config', 'user.name', 'PR Branch Creator'], cwd=target_dir, capture_output=True)
+                subprocess.run(['git', 'config', 'user.email', 'pr-branch-creator@example.com'], cwd=target_dir, capture_output=True)
                 print("✓ Git user configured")
 
                 # Checkout the base branch
@@ -347,7 +262,7 @@ class GitHubPRBranchCreator:
                 print(f"✓ Created branch '{branch_name}'")
 
                 # Clone original repository to get commit content
-                print(f"📥 Cloning original repository for commit content...")
+                print("📥 Cloning original repository for commit content...")
                 original_clone_result = subprocess.run([
                     'git', 'clone', original_url, 'original'
                 ], cwd=temp_dir, capture_output=True, text=True)
@@ -368,7 +283,7 @@ class GitHubPRBranchCreator:
                 if archive_result.returncode != 0:
                     print(f"✗ Failed to archive commit: {archive_result.stderr}")
                     return False
-                print("✓ Successfully archived commit content")
+                print(f"✓ Successfully archived commit content: {archive_result.stdout}")
 
                 # Clear current directory content (except .git)
                 print("🧹 Clearing current branch content...")
@@ -400,7 +315,7 @@ class GitHubPRBranchCreator:
                     import shutil
                     shutil.rmtree(workflows_path)
                     print("✓ Removed .github/workflows folder")
-                    
+
                     # Remove .github folder if it's now empty
                     github_path = os.path.join(target_dir, '.github')
                     if os.path.exists(github_path) and not os.listdir(github_path):
@@ -420,13 +335,7 @@ class GitHubPRBranchCreator:
                     return False
                 print("✓ Changes added to staging area")
 
-                # Get original commit message
-                print("📝 Retrieving original commit message...")
-                commit_msg_result = subprocess.run([
-                    'git', 'log', '--format=%B', '-n', '1', commit_sha
-                ], cwd=original_dir, capture_output=True, text=True)
-
-                commit_message = commit_msg_result.stdout.strip() if commit_msg_result.returncode == 0 else f"Commit {commit_sha[:8]}"
+                commit_message = f"Commit {commit_sha}"
                 print(f"✓ Retrieved commit message: {commit_message[:50]}{'...' if len(commit_message) > 50 else ''}")
 
                 # Create the commit
@@ -444,7 +353,7 @@ class GitHubPRBranchCreator:
                         push_result = subprocess.run([
                             'git', 'push', 'origin', branch_name
                         ], cwd=target_dir, capture_output=True, text=True)
-                        
+
                         if push_result.returncode != 0:
                             print(f"✗ Failed to push branch: {push_result.stderr}")
                             return False
@@ -472,20 +381,9 @@ class GitHubPRBranchCreator:
             print(f"✗ Error creating branch '{branch_name}': {e}")
             return False
 
-    def _create_orphan_branch_with_commit(self, owner: str, repo: str, target_repo: str, 
-                                         branch_name: str, commit_sha: str) -> bool:
+    def _create_orphan_branch_with_commit(self, owner: str, repo: str, target_repo: str, branch_name: str, commit_sha: str) -> bool:
         """
         Create an orphan branch in the target repository with the content of a specific commit.
-
-        Args:
-            owner: Original repository owner
-            repo: Original repository name
-            target_repo: Target repository name (owner-repo format)
-            branch_name: Name of the new branch
-            commit_sha: SHA of the commit to copy
-
-        Returns:
-            True if successful, False otherwise
         """
         import subprocess
         import tempfile
@@ -531,10 +429,8 @@ class GitHubPRBranchCreator:
 
                 # Configure git user (required for commits)
                 print("👤 Configuring Git user...")
-                subprocess.run(['git', 'config', 'user.name', 'PR Branch Creator'], 
-                             cwd=work_dir, capture_output=True)
-                subprocess.run(['git', 'config', 'user.email', 'pr-branch-creator@example.com'], 
-                             cwd=work_dir, capture_output=True)
+                subprocess.run(['git', 'config', 'user.name', 'PR Branch Creator'], cwd=work_dir, capture_output=True)
+                subprocess.run(['git', 'config', 'user.email', 'pr-branch-creator@example.com'], cwd=work_dir, capture_output=True)
                 print("✓ Git user configured")
 
                 # Get the commit content from the original repository
@@ -566,7 +462,7 @@ class GitHubPRBranchCreator:
                     import shutil
                     shutil.rmtree(workflows_path)
                     print("✓ Removed .github/workflows folder")
-                    
+
                     # Remove .github folder if it's now empty
                     github_path = os.path.join(work_dir, '.github')
                     if os.path.exists(github_path) and not os.listdir(github_path):
@@ -586,14 +482,7 @@ class GitHubPRBranchCreator:
                     return False
                 print("✓ Files added to staging area")
 
-                # Get original commit message
-                print("📝 Retrieving original commit message...")
-                commit_msg_result = subprocess.run([
-                    'git', 'log', '--format=%B', '-n', '1', commit_sha
-                ], cwd=source_dir, capture_output=True, text=True)
-
-                commit_message = commit_msg_result.stdout.strip() if commit_msg_result.returncode == 0 else f"Commit {commit_sha[:8]}"
-                print(f"✓ Retrieved commit message: {commit_message[:50]}{'...' if len(commit_message) > 50 else ''}")
+                commit_message = f"Commit {commit_sha}"
 
                 # Create the commit
                 print("💾 Creating orphan commit...")
@@ -604,7 +493,7 @@ class GitHubPRBranchCreator:
                 if commit_result.returncode != 0:
                     print(f"✗ Failed to create commit: {commit_result.stderr}")
                     return False
-                print(f"✓ Created orphan commit successfully")
+                print("✓ Created orphan commit successfully")
 
                 # Add remote and push the orphan branch
                 print("🔗 Adding remote repository...")
@@ -654,12 +543,11 @@ class GitHubPRBranchCreator:
             # Check if target repository exists, create if it doesn't
             target_repo_name = f"{owner}-{repo}"
             print(f"Looking for repository: {self.target_org}/{target_repo_name}")
-            
+
             if not self.check_repo_exists(owner, repo):
                 print(f"❌ Target repository '{self.target_org}/{target_repo_name}' does not exist")
                 print("🏗️ Creating new repository...")
-                original_repo_url = f"https://github.com/{owner}/{repo}"
-                if not self._create_repository(owner, repo, original_repo_url):
+                if not self._create_repository(owner, repo):
                     print(f"✗ Failed to create repository '{target_repo_name}'")
                     return False
                 print(f"✅ Repository '{target_repo_name}' created successfully")
