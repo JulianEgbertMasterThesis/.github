@@ -54,17 +54,6 @@ class GitHubPRBranchCreator:
         response.raise_for_status()
         return response.json()
 
-    def _get_main_branch_sha(self, owner: str, repo: str, branch_name: str = 'main') -> str:
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch_name}"
-        response = requests.get(url, headers=self.headers)
-        if response.status_code == 404:
-            # Try 'master' if 'main' doesn't exist
-            url = f"https://api.github.com/repos/{owner}/{repo}/branches/master"
-            response = requests.get(url, headers=self.headers)
-
-        response.raise_for_status()
-        return response.json()['commit']['sha']
-
     def _get_merge_parent_sha(self, owner: str, repo: str, merge_commit_sha: str) -> str:
         """
         Get the parent SHA of a merge commit (the state of main before the merge).
@@ -572,21 +561,15 @@ class GitHubPRBranchCreator:
             pr_sha = pr_info['head']['sha']
             print(f"✓ PR head SHA: {pr_sha}")
 
-            # Get the SHA for the main branch (parent of merge commit if merged)
-            if pr_merged and pr_info.get('merge_commit_sha'):
-                print("📍 PR is merged - getting parent of merge commit...")
-                # If merged, get the parent of the merge commit (state of main when PR was merged)
-                main_sha = self._get_merge_parent_sha(owner, repo, pr_info['merge_commit_sha'])
-                print(f"✓ Merge parent SHA: {main_sha}")
-            else:
-                print("📍 PR is not merged - getting current main branch...")
-                # If not merged, use current main branch
-                main_sha = self._get_main_branch_sha(owner, repo, base_branch)
-                print(f"✓ Current main branch SHA: {main_sha}")
+            # Get the SHA for the base branch of the PR
+            print("📍 Getting base branch SHA at the time of the PR...")
+            # Use the base SHA from the PR - this is the state of the base branch when the PR was created
+            main_sha = pr_info['base']['sha']
+            print(f"✓ Base branch SHA at PR time: {main_sha}")
 
             # Create branches
             pr_branch_name = f"pr-{pr_number}"
-            main_branch_name = f"main-{pr_number}"
+            main_branch_name = f"{pr_info['base']['ref']}-{pr_number}"
 
             print("\n🌿 Step 5: Checking and creating orphan branches...")
             print(f"Will check/create branches: '{main_branch_name}' and '{pr_branch_name}'")
