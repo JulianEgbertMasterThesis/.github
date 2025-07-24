@@ -283,7 +283,7 @@ class GitHubPRBranchCreator:
                 if archive_result.returncode != 0:
                     print(f"✗ Failed to archive commit: {archive_result.stderr}")
                     return False
-                print(f"✓ Successfully archived commit content: {archive_result.stdout}")
+                print("✓ Successfully archived commit content.")
 
                 # Clear current directory content (except .git)
                 print("🧹 Clearing current branch content...")
